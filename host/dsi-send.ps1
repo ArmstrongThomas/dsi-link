@@ -1,4 +1,4 @@
-# Sends an .nds to DSi Link over Wi-Fi. DSi Link saves it to Homebrew/Dev on the card and,
+# Sends an .nds to DSi Link over Wi-Fi. DSi Link saves it to Homebrew/Dev/Received on the card and,
 # unless -NoRun is given, boots it through Pico Loader. Wire format: source/link_protocol.h.
 param(
     [Parameter(Mandatory=$true)][string]$Address,

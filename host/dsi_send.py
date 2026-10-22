@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Send an .nds to DSi Link over Wi-Fi. Python 3.8+, standard library only.
 
-DSi Link saves the file to Homebrew/Dev on the card and, unless --no-run is
+DSi Link saves the file to Homebrew/Dev/Received on the card and, unless --no-run is
 given, boots it through Pico Loader. Wire format: source/link_protocol.h.
 """
 import argparse

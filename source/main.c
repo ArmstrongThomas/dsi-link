@@ -17,7 +17,8 @@
 #include <unistd.h>
 #include "link_protocol.h"
 
-#define TARGET_DIR "fat:/Homebrew/Dev"
+/* Received builds go to their own folder so a send never replaces a working copy in Homebrew/Dev. */
+#define TARGET_DIR "fat:/Homebrew/Dev/Received"
 #define CHUNK 16384u
 #define RECV_PER_FRAME 4u
 #define TIMEOUT_FRAMES (60u*10u)
@@ -52,7 +53,7 @@ static unsigned quiet_frames;
 static unsigned char head[LINK_HEAD_BYTES+LINK_NAME_MAX];
 static unsigned head_got,head_need;
 static LinkHeader request;
-static char name[LINK_NAME_MAX+1], self_path[256], last_rom[128];
+static char name[LINK_NAME_MAX+1], self_path[256], last_rom[128], address_line[40];
 static FILE *part;
 static u32 got,crc;
 static unsigned char *chunk;
@@ -77,8 +78,8 @@ static bool start_listening(void){
     listen_fd=socket(AF_INET,SOCK_STREAM,0);if(listen_fd<0)return false;
     struct sockaddr_in a={0};a.sin_family=AF_INET;a.sin_port=htons(LINK_PORT);a.sin_addr.s_addr=htonl(INADDR_ANY);
     if(bind(listen_fd,(struct sockaddr *)&a,sizeof(a))<0||listen(listen_fd,1)<0||!set_nonblocking(listen_fd)){close(listen_fd);listen_fd=-1;return false;}
-    struct in_addr ip={.s_addr=Wifi_GetIP()};char line[40];snprintf(line,sizeof(line),"%s : %u",inet_ntoa(ip),LINK_PORT);
-    printf("\x1b[5;0H%-32.32s",line);return true;
+    struct in_addr ip={.s_addr=Wifi_GetIP()};snprintf(address_line,sizeof(address_line),"%s : %u",inet_ntoa(ip),LINK_PORT);
+    printf("\x1b[5;0H%-32.32s",address_line);return true;
 }
 
 /* Keeps the previous copy as .nds.bak until the new file is in place. */
@@ -104,9 +105,31 @@ __attribute__((target("arm"),noinline,noreturn)) static void enter_loader9(void)
     __builtin_unreachable();
 }
 
+static void draw_screen(void){
+    consoleClear();printf("\x1b[0;0HDSi Link %s",LINK_VERSION);printf("\x1b[20;0HA: BOOT LAST  START: EXIT");
+    if(address_line[0])printf("\x1b[5;0H%-32.32s",address_line);
+    printf("\x1b[6;0HEXITING AN APP RETURNS TO:\x1b[7;0H%-32.32s",self_path[0]?loader_path(self_path):"NOWHERE (NOT FOUND)");
+}
+static void printable(char *s){for(;*s;s++)if(*s<32||*s>126)*s='?';}
+/* Shows what is about to be handed to Pico Loader and waits for A (boot) or B (cancel). */
+static bool boot_check(const char *rom,const unsigned char *l7){
+    const unsigned char *d=(const unsigned char *)_io_dldi_stub;u32 magic=(u32)d[0]|((u32)d[1]<<8)|((u32)d[2]<<16)|((u32)d[3]<<24);
+    char driver[49],type[5];memcpy(driver,d+0x10,48);driver[48]=0;memcpy(type,d+0x60,4);type[4]=0;printable(driver);printable(type);
+    u32 entry=(u32)l7[0]|((u32)l7[1]<<8)|((u32)l7[2]<<16)|((u32)l7[3]<<24);unsigned api=(unsigned)(l7[10]|(l7[11]<<8));
+    consoleClear();printf("\x1b[0;0HBOOT CHECK");
+    printf("\x1b[2;0HCARD DRIVER (DLDI)");printf("\x1b[3;0H%-32.32s",driver);
+    printf("\x1b[4;0HTYPE %s  MAGIC %s",type,magic==0xBF8DA5EDu?"OK":"BAD");printf("\x1b[5;0HSIZE 2^%u  AT %08lX",d[0x0D],(unsigned long)(u32)_io_dldi_stub);
+    printf("\x1b[7;0HPICO LOADER API %u",api);printf("\x1b[8;0HARM7 ENTRY %08lX",(unsigned long)entry);
+    printf("\x1b[10;0HROM:");printf("\x1b[11;0H%-32.32s",loader_path(rom));
+    printf("\x1b[13;0HRETURN:");printf("\x1b[14;0H%-32.32s",self_path[0]?loader_path(self_path):"NONE");
+    printf("\x1b[16;0HMODE %s",isDSiMode()?"DSI":"DS");printf("\x1b[20;0HA: BOOT       B: CANCEL     ");
+    for(;;){cothread_yield_irq(IRQ_VBLANK);scanKeys();unsigned k=keysDown();if(k&KEY_A)return true;if(k&KEY_B)return false;}
+}
+
 static void boot(const char *rom){
     u32 n9=0,n7=0;unsigned char *l9=load("fat:/_pico/picoLoader9.bin",&n9,256u*1024u),*l7=load("fat:/_pico/picoLoader7.bin",&n7,256u*1024u);
     if(!l9||!l7){free(l9);free(l7);log_line("PICO LOADER FILES NOT FOUND");status("SAVED; LAUNCH IT FROM PICO LAUNCHER");return;}
+    if(!boot_check(rom,l7)){free(l9);free(l7);draw_screen();status("BOOT CANCELLED");return;}
     static PloadParams params;memset(&params,0,sizeof(params));
     snprintf(params.romPath,sizeof(params.romPath),"%s",loader_path(rom));
     int n=snprintf(params.arguments,sizeof(params.arguments),"%s",rom);params.argumentsLength=(u32)n+1;
@@ -182,8 +205,8 @@ int main(int argc,char **argv){
     chunk=malloc(CHUNK);
     if(!chunk||!fatInitDefault()){status("SD CARD NOT AVAILABLE");for(;;){swiWaitForVBlank();scanKeys();if(keysDown()&KEY_START)return 0;}}
     resolve_return_path(argc,argv);
-    printf("\x1b[6;0HEXITING AN APP RETURNS TO:\x1b[7;0H%-32.32s",self_path[0]?loader_path(self_path):"NOWHERE (NOT FOUND)");
-    mkdir("fat:/Homebrew",0777);mkdir(TARGET_DIR,0777);
+    draw_screen();
+    mkdir("fat:/Homebrew",0777);mkdir("fat:/Homebrew/Dev",0777);mkdir(TARGET_DIR,0777);
     if(!isDSiMode())detail("DS MODE: OPEN/WEP NETWORKS ONLY");
     for(;;){
         cothread_yield_irq(IRQ_VBLANK);scanKeys();unsigned down=keysDown();

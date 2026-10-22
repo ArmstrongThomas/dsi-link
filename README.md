@@ -1,7 +1,7 @@
 # DSi Link
 
 Send homebrew builds to a Nintendo DSi over Wi-Fi, the way `3dslink` works for
-the 3DS. DSi Link saves the received `.nds` to `Homebrew/Dev/` on your
+the 3DS. DSi Link saves the received `.nds` to `Homebrew/Dev/Received/` on your
 flashcart and boots it through [Pico Loader](https://github.com/LNH-team/pico-loader).
 When you exit the booted app you land back in DSi Link, ready for the next
 build. No more pulling the SD card out of the cart.
@@ -34,7 +34,8 @@ build. No more pulling the SD card out of the cart.
    - with Docker on macOS or Linux: `sh scripts/build-docker.sh`
 2. Copy `DSiLink.nds` to the card once by hand, for example to
    `Homebrew/DevTools/DSiLink.nds`. Received builds always go to
-   `Homebrew/Dev/`, wherever DSi Link itself lives.
+   `Homebrew/Dev/Received/`, wherever DSi Link itself lives, so a send never
+   replaces the working copies you keep in `Homebrew/Dev/`.
 
 DSi Link shows where booted apps will return to when you exit them. It uses
 the path Pico Loader passes it; if none arrives, it looks for itself in
@@ -62,14 +63,17 @@ Options: `--name` / `-Name` saves under another file name, `--no-run` /
 `-NoRun` saves without booting, `--port` / `-Port` changes the port.
 
 On the DSi, **A** boots the last received file again and **START** exits to
-Pico Launcher.
+Pico Launcher. Before booting, DSi Link shows a boot check screen: the card
+driver it will pass on, the Pico Loader version and entry point, and the ROM
+and return paths. Press **A** to boot or **B** to cancel.
 
 ## Safety
 
 DSi Link listens on TCP 17494 only while it is open, and there is no
 password, so use it on a network you trust. It writes only plain `.nds` file
 names (letters, digits, space, dot, dash, underscore; up to 63 characters)
-into `Homebrew/Dev/`, files up to 32 MiB, and refuses to overwrite itself.
+into `Homebrew/Dev/Received/`, files up to 32 MiB, and refuses to overwrite
+itself.
 
 ## How booting works
 
