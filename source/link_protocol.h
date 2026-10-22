@@ -16,7 +16,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#define LINK_VERSION "1.0"
+#define LINK_VERSION "1.1"
 #define LINK_PORT 17494
 #define LINK_HEAD_BYTES 20u
 #define LINK_NAME_MAX 63u

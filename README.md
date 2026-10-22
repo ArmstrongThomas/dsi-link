@@ -12,10 +12,11 @@ build. No more pulling the SD card out of the cart.
   then replaces `<name>`. The previous copy is kept as `<name>.bak`.
 - Senders for Windows (PowerShell) and any system with Python 3.8+.
 
-> **Status:** the transfer and save path are covered by host tests. Booting
-> through Pico Loader has not yet been confirmed on hardware; if it misbehaves
-> on your console, send with `--no-run` / `-NoRun` and start the file from
-> Pico Launcher.
+> **Status:** sending and saving work on a DSi LL with a DSpico (Wi-Fi in
+> Advanced Setup, 2026-10-21). Booting through Pico Loader does not work yet:
+> in the first hardware test, after "BOOTING" the console came back to DSi Link
+> reporting the SD card unavailable. Until that is fixed, send with
+> `--no-run` / `-NoRun` and start the file from Pico Launcher.
 
 ## Requirements
 
