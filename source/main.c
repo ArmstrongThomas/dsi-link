@@ -18,7 +18,6 @@
 #include "link_protocol.h"
 
 #define TARGET_DIR "fat:/Homebrew/Dev"
-#define DEFAULT_SELF "fat:/Homebrew/Dev/DSiLink.nds"
 #define CHUNK 16384u
 #define RECV_PER_FRAME 4u
 #define TIMEOUT_FRAMES (60u*10u)
@@ -60,7 +59,8 @@ static unsigned char *chunk;
 
 static void status(const char *s){printf("\x1b[2;0H%-32.32s",s);}
 static void detail(const char *s){printf("\x1b[3;0H%-32.32s",s);}
-static void log_line(const char *s){static int row=8;if(row>22){consoleClear();row=8;}printf("\x1b[%d;0H%-32.32s",row++,s);}
+/* Rows 8-19 hold the log; the title, address and return path above it stay put. */
+static void log_line(const char *s){static int row=8;if(row>19){for(int r=8;r<=19;r++)printf("\x1b[%d;0H%32s",r,"");row=8;}printf("\x1b[%d;0H%-32.32s",row++,s);}
 
 static void join(char *out,size_t n,const char *dir,const char *file,const char *suffix){snprintf(out,n,"%s/%s%s",dir,file,suffix);}
 static bool exists(const char *p){struct stat st;return stat(p,&st)==0;}
@@ -138,7 +138,7 @@ static void receive_head(void){
     }
     if(head_got<head_need)return;
     if(!link_valid_name((const char *)head+LINK_HEAD_BYTES,request.name_length,name)){fail("FILE NAME MUST BE A PLAIN .NDS");return;}
-    const char *self=strrchr(self_path,'/');if(self&&!strcasecmp(self+1,name)){fail("CANNOT REPLACE DSI LINK ITSELF");return;}
+    char target[128];join(target,sizeof(target),TARGET_DIR,name,"");if(!strcasecmp(target,self_path)){fail("CANNOT REPLACE DSI LINK ITSELF");return;}
     if(request.size==0||request.size>LINK_MAX_SIZE){fail("FILE SIZE OUT OF RANGE");return;}
     char tmp[128];join(tmp,sizeof(tmp),TARGET_DIR,name,".part");part=fopen(tmp,"wb");
     if(!part){fail("CANNOT WRITE TO THE CARD");return;}
@@ -167,13 +167,22 @@ static void receive_body(void){
     reply("OK SAVED\n");close_client();stage=S_LISTEN;status("WAITING FOR A BUILD");
 }
 
+/* Booted apps return to self_path. Use the path Pico Loader passes in argv; otherwise look in
+ * the usual homebrew folders, then fall back to Pico Launcher itself. Empty means no return. */
+static void resolve_return_path(int argc,char **argv){
+    static const char *const places[]={"fat:/Homebrew/Dev/DSiLink.nds","fat:/Homebrew/DevTools/DSiLink.nds","fat:/Homebrew/DSiLink.nds","fat:/DSiLink.nds","fat:/_picoboot.nds"};
+    self_path[0]=0;
+    if(argc>0&&argv[0]&&!strncmp(argv[0],"fat:",4)&&exists(argv[0])){snprintf(self_path,sizeof(self_path),"%s",argv[0]);return;}
+    for(unsigned i=0;i<sizeof(places)/sizeof(*places);i++)if(exists(places[i])){snprintf(self_path,sizeof(self_path),"%s",places[i]);return;}
+}
 int main(int argc,char **argv){
     consoleDemoInit();
     printf("\x1b[0;0HDSi Link %s",LINK_VERSION);
     printf("\x1b[20;0HA: BOOT LAST  START: EXIT");
     chunk=malloc(CHUNK);
     if(!chunk||!fatInitDefault()){status("SD CARD NOT AVAILABLE");for(;;){swiWaitForVBlank();scanKeys();if(keysDown()&KEY_START)return 0;}}
-    snprintf(self_path,sizeof(self_path),"%s",argc>0&&argv[0]&&!strncmp(argv[0],"fat:",4)?argv[0]:DEFAULT_SELF);
+    resolve_return_path(argc,argv);
+    printf("\x1b[6;0HEXITING AN APP RETURNS TO:\x1b[7;0H%-32.32s",self_path[0]?loader_path(self_path):"NOWHERE (NOT FOUND)");
     mkdir("fat:/Homebrew",0777);mkdir(TARGET_DIR,0777);
     if(!isDSiMode())detail("DS MODE: OPEN/WEP NETWORKS ONLY");
     for(;;){

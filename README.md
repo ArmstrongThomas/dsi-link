@@ -31,9 +31,14 @@ build. No more pulling the SD card out of the cart.
    - with BlocksDS installed: `make`
    - with Docker on Windows: `powershell -ExecutionPolicy Bypass -File scripts\build-docker.ps1`
    - with Docker on macOS or Linux: `sh scripts/build-docker.sh`
-2. Copy `DSiLink.nds` to `Homebrew/Dev/DSiLink.nds` on the card (copying it
-   once by hand is unavoidable). Keep it at that path: booted apps return
-   there if Pico Loader does not pass DSi Link its own location.
+2. Copy `DSiLink.nds` to the card once by hand, for example to
+   `Homebrew/DevTools/DSiLink.nds`. Received builds always go to
+   `Homebrew/Dev/`, wherever DSi Link itself lives.
+
+DSi Link shows where booted apps will return to when you exit them. It uses
+the path Pico Loader passes it; if none arrives, it looks for itself in
+`Homebrew/Dev`, `Homebrew/DevTools`, `Homebrew` and the card root, and
+otherwise returns to Pico Launcher (`/_picoboot.nds`).
 
 ## Send a build
 
