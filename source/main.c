@@ -45,6 +45,14 @@ typedef struct {
 #define PICO_LOADER7 ((volatile u16 *)0x06840000)
 
 extern char _io_dldi_stub[];
+/* Copy of the card driver exactly as Pico Loader patched it in, taken before this app starts it.
+ * Pico Loader gets this clean copy rather than the live, already-started driver. */
+static u8 dldi_snapshot[16*1024] __attribute__((aligned(32)));
+static bool dldi_snapshot_ok;
+static void snapshot_dldi(void){
+    const u8 *d=(const u8 *)_io_dldi_stub;u32 magic=(u32)d[0]|((u32)d[1]<<8)|((u32)d[2]<<16)|((u32)d[3]<<24);
+    if(magic!=0xBF8DA5EDu||d[0x0D]>14)return;memcpy(dldi_snapshot,d,1u<<d[0x0D]);dldi_snapshot_ok=true;
+}
 
 enum { S_WIFI_INIT, S_WIFI_WAIT, S_LISTEN, S_HEAD, S_BODY, S_IDLE_ERROR };
 
@@ -118,7 +126,7 @@ static bool boot_check(const char *rom,const unsigned char *l7){
     u32 entry=(u32)l7[0]|((u32)l7[1]<<8)|((u32)l7[2]<<16)|((u32)l7[3]<<24);unsigned api=(unsigned)(l7[10]|(l7[11]<<8));
     consoleClear();printf("\x1b[0;0HBOOT CHECK");
     printf("\x1b[2;0HCARD DRIVER (DLDI)");printf("\x1b[3;0H%-32.32s",driver);
-    printf("\x1b[4;0HTYPE %s  MAGIC %s",type,magic==0xBF8DA5EDu?"OK":"BAD");printf("\x1b[5;0HSIZE 2^%u  AT %08lX",d[0x0D],(unsigned long)(u32)_io_dldi_stub);
+    printf("\x1b[4;0HTYPE %s  MAGIC %s",type,magic==0xBF8DA5EDu?"OK":"BAD");printf("\x1b[5;0HSIZE 2^%u  %s %08lX",d[0x0D],dldi_snapshot_ok?"CLEAN COPY":"LIVE",(unsigned long)(u32)(dldi_snapshot_ok?(void *)dldi_snapshot:(void *)_io_dldi_stub));
     printf("\x1b[7;0HPICO LOADER API %u",api);printf("\x1b[8;0HARM7 ENTRY %08lX",(unsigned long)entry);
     printf("\x1b[10;0HROM:");printf("\x1b[11;0H%-32.32s",loader_path(rom));
     printf("\x1b[13;0HRETURN:");printf("\x1b[14;0H%-32.32s",self_path[0]?loader_path(self_path):"NONE");
@@ -134,12 +142,14 @@ static void boot(const char *rom){
     snprintf(params.romPath,sizeof(params.romPath),"%s",loader_path(rom));
     int n=snprintf(params.arguments,sizeof(params.arguments),"%s",rom);params.argumentsLength=(u32)n+1;
     static char launcher[256];memset(launcher,0,sizeof(launcher));snprintf(launcher,sizeof(launcher),"%s",loader_path(self_path));
-    status("BOOTING");if(listen_fd>=0)close(listen_fd);Wifi_DisconnectAP();
+    status("BOOTING");if(listen_fd>=0)close(listen_fd);
+    /* Switch the radio fully off so it is idle when the ARM7 is restarted. */
+    Wifi_DisconnectAP();Wifi_DisableWifi();for(int i=0;i<30;i++)cothread_yield_irq(IRQ_VBLANK);
     vramSetBankA(VRAM_A_LCD);vramSetBankB(VRAM_B_LCD);vramSetBankC(VRAM_C_LCD);vramSetBankD(VRAM_D_LCD);
     copy16(PICO_LOADER9,l9,n9);copy16(PICO_LOADER7,l7,n7);free(l9);free(l7);
     volatile PloadHeader7 *h=(volatile PloadHeader7 *)PICO_LOADER7;
     u16 api=h->apiVersion;u32 entry=(u32)h->entryPoint;
-    h->dldiDriver=_io_dldi_stub;h->bootDrive=PLOAD_BOOT_DRIVE_DLDI;
+    h->dldiDriver=dldi_snapshot_ok?(void *)dldi_snapshot:(void *)_io_dldi_stub;h->bootDrive=PLOAD_BOOT_DRIVE_DLDI;
     copy16((volatile u16 *)&h->loadParams,&params,sizeof(params));
     if(api>=2)copy16((volatile u16 *)h->launcherPath,launcher,sizeof(launcher));
     if(api>=3)h->cheats=NULL;
@@ -199,6 +209,7 @@ static void resolve_return_path(int argc,char **argv){
     for(unsigned i=0;i<sizeof(places)/sizeof(*places);i++)if(exists(places[i])){snprintf(self_path,sizeof(self_path),"%s",places[i]);return;}
 }
 int main(int argc,char **argv){
+    snapshot_dldi();
     consoleDemoInit();
     printf("\x1b[0;0HDSi Link %s",LINK_VERSION);
     printf("\x1b[20;0HA: BOOT LAST  START: EXIT");
