@@ -14,9 +14,9 @@ build. No more pulling the SD card out of the cart.
 
 > **Status:** sending and saving work on a DSi LL with a DSpico (Wi-Fi in
 > Advanced Setup, 2026-10-21). Booting through Pico Loader does not work yet:
-> in the first hardware test, after "BOOTING" the console came back to DSi Link
-> reporting the SD card unavailable. Until that is fixed, send with
-> `--no-run` / `-NoRun` and start the file from Pico Launcher.
+> after "BOOTING" the console comes back to DSi Link reporting the SD card
+> unavailable. Until that is fixed, send with `--no-run` / `-NoRun` and start
+> the file from Pico Launcher. Findings so far: [docs/boot-handoff-notes.md](docs/boot-handoff-notes.md).
 
 ## Requirements
 
