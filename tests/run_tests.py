@@ -80,7 +80,7 @@ def loopback(sender, payload_path, out_dir, label):
         if captured.get("payload") != f.read():
             sys.exit(f"{label} sender: received bytes differ from the file")
     if struct.unpack_from("<I", captured["head"], 4)[0] != 0:
-        sys.exit(f"{label} sender: --no-run did not clear the run flag")
+        sys.exit(f"{label} sender: the default send set the boot flag")
     head_path = os.path.join(out_dir, f"header-{label}.bin")
     with open(head_path, "wb") as f:
         f.write(captured["head"])
@@ -96,12 +96,12 @@ def main():
         with open(payload, "wb") as f:
             f.write(bytes(rng.randrange(256) for _ in range(70001)))
         senders = {"python": lambda port: [sys.executable, os.path.join(ROOT, "host", "dsi_send.py"), "127.0.0.1",
-                                           payload, "--port", str(port), "--name", NAME, "--no-run"]}
+                                           payload, "--port", str(port), "--name", NAME]}
         shell = shutil.which("pwsh") or shutil.which("powershell")
         if shell:
             senders["powershell"] = lambda port: [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                                                   os.path.join(ROOT, "host", "dsi-send.ps1"), "-Address", "127.0.0.1",
-                                                  "-Port", str(port), "-File", payload, "-Name", NAME, "-NoRun"]
+                                                  "-Port", str(port), "-File", payload, "-Name", NAME]
         else:
             print("PowerShell not found; skipping dsi-send.ps1 loopback")
         for label, sender in senders.items():

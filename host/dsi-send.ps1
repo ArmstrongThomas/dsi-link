@@ -1,11 +1,13 @@
-# Sends an .nds to DSi Link over Wi-Fi. DSi Link saves it to Homebrew/Dev/Received on the card and,
-# unless -NoRun is given, boots it through Pico Loader. Wire format: source/link_protocol.h.
+# Sends an .nds to DSi Link over Wi-Fi. DSi Link saves it to Homebrew/Dev/Received on the card;
+# start it from Pico Launcher. -Run also asks DSi Link to boot it through Pico Loader, which is
+# experimental and does not work yet. Wire format: source/link_protocol.h.
 param(
     [Parameter(Mandatory=$true)][string]$Address,
     [Parameter(Mandatory=$true)][string]$File,
     [string]$Name,
     [int]$Port = 17494,
-    [switch]$NoRun,
+    [switch]$Run,
+    [switch]$NoRun,   # accepted for older commands; saving only is the default
     [int]$TimeoutSeconds = 15
 )
 $ErrorActionPreference = 'Stop'
@@ -32,7 +34,7 @@ $nameBytes = [Text.Encoding]::ASCII.GetBytes($Name)
 
 $header = New-Object byte[] 20
 [Text.Encoding]::ASCII.GetBytes('DSLK').CopyTo($header, 0)
-[BitConverter]::GetBytes([uint32]($(if ($NoRun) { 0 } else { 1 }))).CopyTo($header, 4)
+[BitConverter]::GetBytes([uint32]($(if ($Run -and -not $NoRun) { 1 } else { 0 }))).CopyTo($header, 4)
 [BitConverter]::GetBytes([uint32]$data.Length).CopyTo($header, 8)
 [BitConverter]::GetBytes([uint32]$crc).CopyTo($header, 12)
 [BitConverter]::GetBytes([uint16]$nameBytes.Length).CopyTo($header, 16)

@@ -2,9 +2,8 @@
 
 Send homebrew builds to a Nintendo DSi over Wi-Fi, the way `3dslink` works for
 the 3DS. DSi Link saves the received `.nds` to `Homebrew/Dev/Received/` on your
-flashcart and boots it through [Pico Loader](https://github.com/LNH-team/pico-loader).
-When you exit the booted app you land back in DSi Link, ready for the next
-build. No more pulling the SD card out of the cart.
+flashcart; start it from Pico Launcher. No more pulling the SD card out of the
+cart.
 
 - Works with WPA/WPA2 networks saved in the DSi's Advanced Setup (connections
   4–6), because it runs in DSi mode with BlocksDS's DSWiFi.
@@ -13,10 +12,10 @@ build. No more pulling the SD card out of the cart.
 - Senders for Windows (PowerShell) and any system with Python 3.8+.
 
 > **Status:** sending and saving work on a DSi LL with a DSpico (Wi-Fi in
-> Advanced Setup, 2026-10-21). Booting through Pico Loader does not work yet:
-> after "BOOTING" the console comes back to DSi Link reporting the SD card
-> unavailable. Until that is fixed, send with `--no-run` / `-NoRun` and start
-> the file from Pico Launcher. Findings so far: [docs/boot-handoff-notes.md](docs/boot-handoff-notes.md).
+> Advanced Setup, 2026-10-21). Booting the received file straight from DSi Link
+> through [Pico Loader](https://github.com/LNH-team/pico-loader) is experimental
+> and does not work yet, so senders only save by default. Findings so far:
+> [docs/boot-handoff-notes.md](docs/boot-handoff-notes.md).
 
 ## Requirements
 
@@ -59,13 +58,15 @@ PowerShell (Windows):
 powershell -ExecutionPolicy Bypass -File host/dsi-send.ps1 -Address 192.168.1.50 -File path\to\game.nds
 ```
 
-Options: `--name` / `-Name` saves under another file name, `--no-run` /
-`-NoRun` saves without booting, `--port` / `-Port` changes the port.
+Then press **START** on the DSi to exit to Pico Launcher and open the file
+from `Homebrew/Dev/Received/`.
 
-On the DSi, **A** boots the last received file again and **START** exits to
-Pico Launcher. Before booting, DSi Link shows a boot check screen: the card
-driver it will pass on, the Pico Loader version and entry point, and the ROM
-and return paths. Press **A** to boot or **B** to cancel.
+Options: `--name` / `-Name` saves under another file name, `--port` / `-Port`
+changes the port. `--run` / `-Run` also asks DSi Link to boot the file through
+Pico Loader (experimental). Before booting, DSi Link shows a boot check screen
+with the card driver, Pico Loader version and paths; **A** boots, **B**
+cancels. On the main screen **A** tries to boot the last received file the
+same way.
 
 ## Safety
 

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Send an .nds to DSi Link over Wi-Fi. Python 3.8+, standard library only.
 
-DSi Link saves the file to Homebrew/Dev/Received on the card and, unless --no-run is
-given, boots it through Pico Loader. Wire format: source/link_protocol.h.
+DSi Link saves the file to Homebrew/Dev/Received on the card; start it from Pico
+Launcher. --run also asks DSi Link to boot it through Pico Loader, which is
+experimental and does not work yet. Wire format: source/link_protocol.h.
 """
 import argparse
 import os
@@ -27,7 +28,7 @@ def read_reply(sock):
     return line.decode("ascii", "replace")
 
 
-def send(address, path, name=None, port=PORT, run=True, timeout=15.0, out=sys.stdout):
+def send(address, path, name=None, port=PORT, run=False, timeout=15.0, out=sys.stdout):
     name = name or os.path.basename(path)
     if not NAME_PATTERN.match(name) or ".." in name:
         raise ValueError(f"name {name!r} must be a plain .nds file name "
@@ -72,11 +73,12 @@ def main(argv=None):
     parser.add_argument("file", help=".nds file to send")
     parser.add_argument("--name", help="save under this file name instead (must end in .nds)")
     parser.add_argument("--port", type=int, default=PORT)
-    parser.add_argument("--no-run", action="store_true", help="save without booting")
+    parser.add_argument("--run", action="store_true", help="also boot it through Pico Loader (experimental, not working yet)")
+    parser.add_argument("--no-run", action="store_true", help="save only (the default; kept for older commands)")
     parser.add_argument("--timeout", type=float, default=15.0, help="seconds to wait for the DSi")
     args = parser.parse_args(argv)
     try:
-        send(args.address, args.file, args.name, args.port, not args.no_run, args.timeout)
+        send(args.address, args.file, args.name, args.port, args.run and not args.no_run, args.timeout)
     except (OSError, ValueError, RuntimeError) as error:
         print(f"dsi_send: {error}", file=sys.stderr)
         return 1
