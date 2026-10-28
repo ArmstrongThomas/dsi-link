@@ -1,5 +1,67 @@
 # Changelog
 
+## 1.5.3 — 2026-10-28 (candidate)
+
+- Request automatic Wi-Fi recovery after an aborted control connection or an
+  explicit network-down/unreachable/reset socket error. Wait for other active
+  transfers and queued replies to finish, then use the accepted X reconnect
+  path with a 30-second cooldown. No unsupported lwIP teardown.
+- Ordinary peer resets, peer timeouts, QUIT and idle expiration do not trigger
+  radio recovery. Failed reconnect attempts remain available for manual X retry.
+- Decode control errors in the log. Pinned newlib error 113 is ECONNABORTED.
+- Reject AUTH/PBSZ/PROT explicitly as unsupported TLS operations before login,
+  instead of the misleading "Log in first" reply to FileZilla's probes.
+- Linux fault-injection tests cover recovery requests, transfer/reply deferral
+  and normal-reset exclusion under ASan/UBSan. The user reports successful
+  FileZilla use without manual X recovery on 1.5.3. A confirmed automatic
+  recovery after a reproduced hardware stall remains pending.
+
+## 1.5.2 — 2026-10-28 (candidate)
+
+- Allow four independent FTP control sessions so FileZilla browsing and transfer
+  connections can coexist without the single-session rejection/retry loop.
+- Rotate bounded polling across sessions; queue data transfers and listings
+  behind one shared 32 KiB buffer/card worker. File mutations from other
+  sessions receive 450 during a transfer. Abort/disconnect cancels queued work.
+- Keep directories, login/parser/reply state and passive sockets per session;
+  label log entries S1–S4. A fifth connection receives immediate FTP 421.
+- Host/sanitizer tests cover independent directories, browsing/control traffic
+  during an upload, queued transfers, queued cancellation and capacity limits.
+- Hardware acceptance remains pending. This addresses the demonstrated session
+  conflict, not every possible Wi-Fi disconnect. For large files, use one
+  simultaneous transfer in FileZilla to avoid its timeout while queued.
+
+## 1.5.1 — 2026-10-28 (candidate)
+
+- Reply immediately with FTP 421 to extra control connections while the single
+  session is occupied, and log the rejection. Previously they sat silently in
+  the listener backlog. A hardware check reproduced a five-second greeting
+  timeout on a second connection while the first remained responsive.
+- Enable TCP keepalive on control sessions (30-second idle, five-second probe
+  interval, three probes), logging any unsupported option. This helps detect
+  dead peers; it is separate from the unchanged 120-second application timeout.
+- Distinguish client QUIT, control EOF, socket errors and idle timeout in logs.
+- Move the log navigation hint to the bottom screen. Use 23 top-screen log
+  rows and 31 columns, avoiding the bottom-right cell's console auto-scroll.
+- Host/sanitizer tests cover extra-connection rejection without disrupting the
+  original session. The reported intermittent hardware stall is not yet proven
+  resolved; FileZilla must limit the site to one simultaneous connection.
+
+## 1.5 — 2026-10-28 (candidate)
+
+- Dedicated top-screen activity console with 128 lines of bounded in-memory
+  history, wrapped paths, Up/Down scrolling and Y to follow the latest events.
+- Log Wi-Fi connection attempts/results and manual retry, FTP connections,
+  directory changes/listings, file operations, transfer completion/cancellation
+  and errors. Build-receiver messages share the same log, including file names,
+  incoming sizes and checksum-verified saves.
+- Keep status/controls on the bottom screen; refresh the log only when dirty
+  and at most ten times per second. No per-packet or progress-message flood.
+- Sanitize log control characters and exclude passwords and routine metadata
+  polling. Logs stay in RAM and are not written to the card.
+- Host checks cover wrapping, history rollover, FTP event coverage and password
+  exclusion. Hardware layout/scrolling and transfer responsiveness remain pending.
+
 ## 1.4.2 — 2026-10-28
 
 ### Added

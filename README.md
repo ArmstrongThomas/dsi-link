@@ -81,6 +81,17 @@ that disconnect and the need for manual recovery remain unresolved.
 Do not use 1.4.1: its retry attempted unsupported lwIP teardown and failed on
 hardware. 1.4.2 keeps lwIP and the DSi Wi-Fi driver initialized during retry.
 
+In **1.5.3**, an aborted FTP control socket (SDK error 113) or an explicit
+network-down/unreachable/reset error requests automatic recovery through this
+same reconnect path. It waits for other active transfers and their replies to
+finish and limits retries with a 30-second cooldown. Normal peer resets,
+timeouts and idle expiration do not restart the radio. This is a recovery
+workaround for the observed whole-network stall, not a diagnosis of its cause.
+If a drop produces no qualifying socket error, X may still be needed. The user
+reports successful FileZilla use on 1.5.3 without manual reconnect or console
+intervention. That does not establish whether automatic recovery triggered;
+explicit observation after a reproduced hardware stall remains pending.
+
 Options: `--name` / `-Name` saves under another file name, `--port` / `-Port`
 changes the port. `--run` / `-Run` also asks DSi Link to boot the file through
 Pico Loader (experimental). Before booting, DSi Link shows a boot check screen
@@ -98,10 +109,37 @@ itself.
 
 ## FTP (1.4)
 
+### Top-screen activity log (1.5)
+
+The top screen shows connection/retry events, FTP directory/file actions,
+transfer results/errors and build-receiver messages. It follows the latest
+events automatically. **Up/Down** scroll through the last 128 lines; **Y**
+returns to the newest entries. Long paths wrap across lines. The bottom screen
+keeps the current status and controls. The log stays in RAM, clears when the
+app exits, filters control characters and never records FTP passwords.
+Routine NOOP and metadata polling are omitted. Hardware layout/scrolling and
+performance acceptance for this candidate remain pending. In 1.5.1, the scroll
+hint moves to the bottom screen so the top has 23 unobstructed log rows.
+
+### Connect
+
 Connect FileZilla, WinSCP or another FTP client to the displayed IP, port
 **5000**, using **plain FTP**, **passive mode**, username **anonymous** and
-any password. Limit the client to **one connection**. Disconnect the FTP
-session before using the build sender or booting the last build.
+any password. Starting with **1.5.2**, up to **four control connections** can
+stay open, so FileZilla can keep a browsing connection alongside transfer
+connections. Disconnect all FTP sessions before using the build sender or
+booting the last build.
+
+Set the site's maximum simultaneous connections to at most **4**. FileZilla's
+"default transfer mode" is a separate active/passive setting. Older builds
+support only one session (1.5.1 rejects extras; earlier versions leave them
+waiting). In 1.5.2 each session has its own directory, parser, replies and data
+socket. File transfers/listings queue behind the current card transfer; file
+mutations from other sessions receive 450 until it completes. Queued operations
+can be aborted. Configure one simultaneous file transfer in FileZilla for large
+files to avoid client timeouts while a transfer waits in the queue. Control
+sockets use TCP keepalive; each session's application idle timeout remains 120
+seconds. Log entries identify the session as S1 through S4.
 
 FTP exposes the entire flashcart mounted as `fat:`, with `/` as its root.
 Unlike the build receiver, it can upload any file type, download, create and
@@ -125,7 +163,7 @@ Supported operations include PASV/EPSV, LIST/NLST/MLSD/MLST, RETR, STOR,
 download resume (REST), SIZE/MDTM, CWD/CDUP/PWD, MKD/RMD, DELE, RNFR/RNTO,
 ABOR, FEAT and NOOP. Paths are printable ASCII; device prefixes, backslashes,
 wildcards and trailing dots/spaces are rejected. There is no active FTP
-(PORT/EPRT), upload resume/append, MODE Z, TLS or parallel-client support yet.
+(PORT/EPRT), upload resume/append, MODE Z, TLS or parallel file transfers yet.
 `TYPE A` is accepted for listings, but all file bytes are preserved unchanged.
 
 ### Scheduling and performance

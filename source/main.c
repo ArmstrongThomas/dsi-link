@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include "link_protocol.h"
 #include "ftp.h"
+#include "event_log.h"
 
 /* Received builds go to their own folder so a send never replaces a working copy in Homebrew/Dev. */
 #define TARGET_DIR "fat:/Homebrew/Dev/Received"
@@ -60,6 +61,7 @@ enum { S_WIFI_INIT, S_WIFI_WAIT, S_WIFI_RESET, S_LISTEN, S_HEAD, S_BODY, S_IDLE_
 static int stage=S_WIFI_INIT, listen_fd=-1, client_fd=-1;
 static unsigned quiet_frames;
 static unsigned wifi_wait_frames, wifi_reset_frames;
+static unsigned wifi_recovery_cooldown;
 static bool wifi_initialized;
 static unsigned char head[LINK_HEAD_BYTES+LINK_NAME_MAX];
 static unsigned head_got,head_need;
@@ -68,11 +70,41 @@ static char name[LINK_NAME_MAX+1], self_path[256], last_rom[128], address_line[4
 static FILE *part;
 static u32 got,crc;
 static unsigned char *chunk;
+static PrintConsole top_console, *bottom_console;
+static unsigned log_offset;
+static bool log_view_dirty=true;
 
-static void status(const char *s){printf("\x1b[2;0H%-32.32s",s);}
+static void ftp_log(const char *s){event_log_write("FTP",s);}
+static void render_log(void){
+    static u32 shown_revision;
+    static unsigned cadence;
+    u32 revision=event_log_revision();
+    if(++cadence%6)return;
+    if(revision==shown_revision&&!log_view_dirty)return;
+    size_t count=event_log_count(),visible=23;
+    if(log_offset&&revision!=shown_revision)log_offset+=(unsigned)(revision-shown_revision);
+    unsigned maximum=count>visible?(unsigned)(count-visible):0;
+    if(log_offset>maximum)log_offset=maximum;
+    size_t end=count-log_offset,start=end>visible?end-visible:0;
+    consoleSelect(&top_console);
+    printf("\x1b[0;0H%-31.31s",log_offset?"DSi Link activity / history":"DSi Link activity / live");
+    /* Leave the last column empty: writing the bottom-right cell scrolls the
+     * console and can move the newest event underneath a fixed footer. */
+    for(unsigned row=0;row<visible;row++){
+        top_console.cursorX=0;top_console.cursorY=(int)row+1;
+        printf("%-31.31s",start+row<end?event_log_line(start+row):"");
+    }
+    consoleSelect(bottom_console);
+    shown_revision=revision;log_view_dirty=false;
+}
+
+static void status(const char *s){
+    static char previous[96];
+    if(strcmp(previous,s)){event_log_write("LINK",s);snprintf(previous,sizeof(previous),"%s",s);}
+    printf("\x1b[2;0H%-32.32s",s);
+}
 static void detail(const char *s){printf("\x1b[3;0H%-32.32s",s);}
-/* Rows 8-19 hold the log; the title, address and return path above it stay put. */
-static void log_line(const char *s){static int row=8;if(row>19){for(int r=8;r<=19;r++)printf("\x1b[%d;0H%32s",r,"");row=8;}printf("\x1b[%d;0H%-32.32s",row++,s);}
+static void log_line(const char *s){event_log_write("LINK",s);}
 
 static void join(char *out,size_t n,const char *dir,const char *file,const char *suffix){snprintf(out,n,"%s/%s%s",dir,file,suffix);}
 static bool exists(const char *p){struct stat st;return stat(p,&st)==0;}
@@ -82,6 +114,15 @@ static void fail(const char *why){
     char line[96];snprintf(line,sizeof(line),"ERR %s\n",why);reply(line);log_line(why);
     if(part){fclose(part);part=NULL;char p[128];join(p,sizeof(p),TARGET_DIR,name,".part");remove(p);}
     close_client();stage=S_LISTEN;status("WAITING FOR A BUILD");
+}
+static void reconnect_wifi(const char *reason){
+    event_log_write("WIFI",reason);
+    if(stage==S_HEAD||stage==S_BODY)fail("WI-FI RETRY; TRANSFER CANCELED");
+    ftp_stop();close_client();if(listen_fd>=0){close(listen_fd);listen_fd=-1;}
+    address_line[0]=0;printf("\x1b[5;0H%32s","");printf("\x1b[21;0H%32s","");
+    detail("");status("RESTARTING WI-FI");wifi_recovery_cooldown=60u*30u;
+    if(wifi_initialized){Wifi_DisconnectAP();wifi_reset_frames=4;stage=S_WIFI_RESET;}
+    else stage=S_WIFI_INIT;
 }
 static bool set_nonblocking(int fd){int on=1;return ioctl(fd,FIONBIO,&on)==0;}
 
@@ -123,6 +164,7 @@ static void draw_screen(void){
     printf("\x1b[6;0HEXITING AN APP RETURNS TO:\x1b[7;0H%-32.32s",self_path[0]?loader_path(self_path):"NOWHERE (NOT FOUND)");
     printf("\x1b[22;0HFTP :5000  anonymous / any pass");
     printf("\x1b[4;0HX: RETRY WI-FI (CANCEL TRANSFER)");
+    printf("\x1b[18;0HUP/DN: LOG SCROLL   Y: LATEST");
     printf("\x1b[23;0H%s",isDSiMode()?((REG_SCFG_CLK&SCFG_CLK_ARM9_TWL)?"DSi mode / ARM9 134 MHz":"DSi mode / ARM9 67 MHz"):"DS mode / open or WEP only");
 }
 static void printable(char *s){for(;*s;s++)if(*s<32||*s>126)*s='?';}
@@ -183,7 +225,8 @@ static void receive_head(void){
     char tmp[128];join(tmp,sizeof(tmp),TARGET_DIR,name,".part");part=fopen(tmp,"wb");
     if(!part){fail("CANNOT WRITE TO THE CARD");return;}
     got=0;crc=0;stage=S_BODY;reply("READY\n");
-    char line[48];snprintf(line,sizeof(line),"RECEIVING %.20s",name);status(line);
+    char line[96];snprintf(line,sizeof(line),"Receiving %s (%lu bytes)",name,(unsigned long)request.size);log_line(line);
+    snprintf(line,sizeof(line),"RECEIVING %.20s",name);status(line);
 }
 
 static void receive_body(void){
@@ -202,7 +245,7 @@ static void receive_body(void){
     if(!ok){fail("CARD WRITE FAILED");return;}
     if(crc!=request.crc32){fail("CHECKSUM MISMATCH; RESEND");return;}
     if(!install()){fail("COULD NOT REPLACE THE OLD FILE");return;}
-    char saved[64];snprintf(saved,sizeof(saved),"SAVED %.24s",name);log_line(saved);
+    char saved[96];snprintf(saved,sizeof(saved),"Saved %s; CRC-32 verified",name);log_line(saved);
     if(request.flags&LINK_FLAG_RUN){reply("OK SAVED, BOOTING\n");close_client();boot(last_rom);stage=S_LISTEN;return;}
     reply("OK SAVED\n");close_client();stage=S_LISTEN;status("WAITING FOR A BUILD");
 }
@@ -218,7 +261,13 @@ static void resolve_return_path(int argc,char **argv){
 int main(int argc,char **argv){
     snapshot_dldi();
     if(isDSiMode())setCpuClock(true);
-    consoleDemoInit();
+    bottom_console=consoleDemoInit();
+    videoSetMode(MODE_0_2D);vramSetBankA(VRAM_A_MAIN_BG);lcdMainOnTop();
+    consoleInit(&top_console,0,BgType_Text4bpp,BgSize_T_256x256,22,3,true,true);
+    consoleSelect(bottom_console);
+    keysSetRepeat(20,4);
+    ftp_set_logger(ftp_log);
+    event_log_write("LINK","DSi Link " LINK_VERSION " started");
     printf("\x1b[0;0HDSi Link %s",LINK_VERSION);
     printf("\x1b[20;0HA: BOOT LAST  START: EXIT");
     chunk=malloc(CHUNK);
@@ -229,13 +278,14 @@ int main(int argc,char **argv){
     if(!isDSiMode())detail("DS MODE: OPEN/WEP NETWORKS ONLY");
     for(;;){
         cothread_yield_irq(IRQ_VBLANK);scanKeys();unsigned down=keysDown();
+        if(wifi_recovery_cooldown)wifi_recovery_cooldown--;
+        unsigned held=keysDownRepeat();
+        if(held&KEY_UP){if(log_offset<EVENT_LOG_LINES-23)log_offset++;log_view_dirty=true;}
+        if(held&KEY_DOWN){if(log_offset)log_offset--;log_view_dirty=true;}
+        if(down&KEY_Y){log_offset=0;log_view_dirty=true;}
+        render_log();
         if((down&KEY_X)&&stage!=S_WIFI_RESET){
-            if(stage==S_HEAD||stage==S_BODY)fail("WI-FI RETRY; TRANSFER CANCELED");
-            ftp_stop();close_client();if(listen_fd>=0){close(listen_fd);listen_fd=-1;}
-            address_line[0]=0;printf("\x1b[5;0H%32s","");printf("\x1b[21;0H%32s","");
-            detail("");status("RESTARTING WI-FI");
-            if(wifi_initialized){Wifi_DisconnectAP();wifi_reset_frames=4;stage=S_WIFI_RESET;}
-            else stage=S_WIFI_INIT;
+            reconnect_wifi("Manual reconnect requested");
         }
         if(stage!=S_BODY&&stage!=S_HEAD){
             if(down&KEY_START){ftp_stop();close_client();if(listen_fd>=0)close(listen_fd);return 0;}
@@ -257,6 +307,8 @@ int main(int argc,char **argv){
             if(++wifi_wait_frames>60u*30u){status("WI-FI TIMED OUT; X TO RETRY");stage=S_IDLE_ERROR;break;}
             if(r==ASSOCSTATUS_CANNOTCONNECT){status("SAVED WI-FI CONNECTION FAILED");stage=S_IDLE_ERROR;break;}
             if(r==ASSOCSTATUS_ASSOCIATED&&Wifi_GetIP()){
+                struct in_addr connected_ip={.s_addr=Wifi_GetIP()};char connected[64];
+                snprintf(connected,sizeof(connected),"Connected: %s",inet_ntoa(connected_ip));event_log_write("WIFI",connected);
                 if(start_listening()){
                     stage=S_LISTEN;status("WAITING FOR A BUILD");
                     if(!ftp_start("fat:",self_path,Wifi_GetIP()))log_line("FTP COULD NOT OPEN PORT 5000");
@@ -277,5 +329,7 @@ int main(int argc,char **argv){
         case S_BODY:receive_body();break;
         default:break;
         }
+        if(stage==S_LISTEN&&!wifi_recovery_cooldown&&ftp_network_recovery_ready())
+            reconnect_wifi("Automatic recovery after socket abort");
     }
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the actual FTP C service with ftplib (POSIX host or Docker)."""
 import ftplib
+import errno
 import io
 import os
 from pathlib import Path
@@ -34,21 +35,46 @@ def connect():
 def main():
     with tempfile.TemporaryDirectory() as temp:
         folder = Path(temp)
+        log_check = folder / "log_check"
+        subprocess.run([os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
+                        str(ROOT / "source/event_log.c"), str(ROOT / "tests/log_check.c"), "-o", str(log_check)]
+                       + shlex.split(os.environ.get("FTP_TEST_CFLAGS", "")), check=True)
+        subprocess.run([str(log_check)], check=True)
         binary = folder / "ftp_host"
         subprocess.run([os.environ.get("CC", "cc"), "-D_DEFAULT_SOURCE", "-std=c11",
                         "-Wall", "-Wextra", "-Werror", "-Wno-misleading-indentation",
                         "-O2", str(ROOT / "source/ftp.c"), str(ROOT / "tests/ftp_host.c"),
-                        "-o", str(binary)] + shlex.split(os.environ.get("FTP_TEST_CFLAGS", "")), check=True)
+                        "-o", str(binary)] + (["-U_FORTIFY_SOURCE", "-D_FORTIFY_SOURCE=0", "-Drecv=ftp_host_recv"] if os.sys.platform.startswith("linux") else [])
+                       + shlex.split(os.environ.get("FTP_TEST_CFLAGS", "")), check=True)
         card = folder / "card"
         card.mkdir()
         app_dir = card / "Homebrew"
         app_dir.mkdir()
         app = app_dir / "DSiLink.nds"
         app.write_bytes(b"running app")
-        server = subprocess.Popen([str(binary), str(card), str(app)], stdout=subprocess.PIPE, text=True)
+        event_file = folder / "ftp-events.log"
+        fault_file = folder / "socket-fault.txt"
+        server = subprocess.Popen([str(binary), str(card), str(app), str(event_file), str(fault_file)], stdout=subprocess.PIPE, text=True)
         try:
             assert server.stdout.readline().strip() == "READY"
             ftp = connect()
+            ftp.login("anonymous", "test-password-never-log")
+            refused(lambda: ftp.sendcmd("AUTH TLS"),502)
+            extra = connect()
+            extra.cwd("Homebrew")
+            assert ftp.pwd()=="/" and extra.pwd()=="/Homebrew"
+            third, fourth = connect(), connect()
+            fifth = ftplib.FTP()
+            try:
+                fifth.connect("127.0.0.1", 5000, timeout=2)
+            except ftplib.error_temp as e:
+                assert str(e).startswith("421"), str(e)
+            else:
+                raise AssertionError("Fifth connection must receive immediate 421")
+            finally:
+                fifth.close()
+            extra.quit();third.quit();fourth.quit()
+            assert ftp.sendcmd("NOOP").startswith("200")
             assert ftp.pwd() == "/"
             refused(lambda: ftp.storbinary("STOR Homebrew/DSiLink.nds", io.BytesIO(b"bad")), 550)
             refused(lambda: ftp.delete("Homebrew/DSiLink.nds"), 550)
@@ -59,6 +85,44 @@ def main():
             assert ftp.pwd() == "/"
             ftp.mkd("files")
             ftp.cwd("files")
+            # A browsing session stays responsive while another owns card I/O.
+            browsing = connect()
+            browsing.cwd("files")
+            first_data = ftp.transfercmd("STOR held.bin")
+            first_data.sendall(b"first file")
+            assert browsing.pwd()=="/files"
+            assert browsing.sendcmd("NOOP").startswith("200")
+            try:
+                browsing.delete("held.bin")
+            except ftplib.error_temp as e:
+                assert str(e).startswith("450")
+            else:
+                raise AssertionError("Mutation must wait for the active transfer")
+            host, port = browsing.makepasv()
+            second_data = socket.create_connection((host,port),timeout=5)
+            browsing.putcmd("STOR queued.bin")
+            time.sleep(.03)
+            first_data.close()
+            assert ftp.voidresp().startswith("226")
+            assert browsing.getresp().startswith("150")
+            second_data.sendall(b"second file")
+            second_data.close()
+            assert browsing.voidresp().startswith("226")
+            assert (card / "files/held.bin").read_bytes()==b"first file"
+            assert (card / "files/queued.bin").read_bytes()==b"second file"
+            ftp.delete("held.bin");ftp.delete("queued.bin")
+            # ABOR can cancel a queued transfer without opening its destination.
+            first_data = ftp.transfercmd("STOR held.bin")
+            host, port = browsing.makepasv()
+            second_data = socket.create_connection((host,port),timeout=5)
+            browsing.putcmd("STOR canceled.bin")
+            time.sleep(.03)
+            assert browsing.sendcmd("ABOR").startswith("226")
+            second_data.close();first_data.close()
+            assert ftp.voidresp().startswith("226")
+            assert not (card / "files/canceled.bin").exists()
+            ftp.delete("held.bin")
+            browsing.quit()
             payload = random.Random(17).randbytes(512 * 1024 + 17)
             ftp.storbinary("STOR test file.bin", io.BytesIO(payload), blocksize=113)
             assert ftp.size("test file.bin") == len(payload)
@@ -147,6 +211,47 @@ def main():
             subprocess.run([os.sys.executable, str(ROOT / "host/ftp_benchmark.py"), "127.0.0.1",
                             "--directory", "/", "--mib", "1"], check=True)
             assert not list(card.glob("dsi-link-benchmark-*"))
+            if os.sys.platform.startswith("linux"):
+                ftp=connect()
+                fault_file.write_text(f"{ftp.sock.getsockname()[1]} {errno.ECONNABORTED}")
+                time.sleep(.1)
+                ftp.close()
+                assert event_file.read_text().count("HOST network recovery ready")==1, event_file.read_text()[-1600:]
+                ftp=connect()
+                other=connect()
+                data=ftp.transfercmd("STOR recovery-held.bin")
+                data.sendall(b"preserve active transfer")
+                fault_file.write_text(f"{other.sock.getsockname()[1]} {errno.ECONNABORTED}")
+                time.sleep(.1)
+                assert event_file.read_text().count("HOST network recovery ready")==1
+                assert ftp.voidcmd("NOOP").startswith("200")
+                other.close();data.close()
+                assert ftp.voidresp().startswith("226")
+                ftp.close();time.sleep(.1)
+                assert event_file.read_text().count("HOST network recovery ready")==2
+                ftp=connect()
+                assert (card / "recovery-held.bin").read_bytes()==b"preserve active transfer"
+                ftp.delete("recovery-held.bin")
+                # A normal peer reset must not reset all other sessions.
+                other=connect()
+                other.sock.setsockopt(socket.SOL_SOCKET,socket.SO_LINGER,struct.pack("ii",1,0))
+                other.close();time.sleep(.1)
+                assert event_file.read_text().count("HOST network recovery ready")==2
+                assert ftp.voidcmd("NOOP").startswith("200")
+                ftp.quit()
+                print("Aborted-control recovery, active-transfer deferral, completion reply and normal-reset exclusion: PASS")
+            events = event_file.read_text()
+            for expected in ("Listening on port", "Client connected", "Directory /files", "MKD /files",
+                             "STOR /files/test file.bin", "Upload saved", "Download complete", "Listing complete",
+                             "Renamed /files/test file.bin", "To /files/renamed.bin", "Abort requested",
+                             "Transfer stopped", "DELE /files/renamed.bin", "RMD /files", "Client disconnected"):
+                assert expected in events, expected
+            assert "Rejected connection: 4 sessions full" in events
+            assert "Queued STOR queued.bin" in events
+            assert "Queued transfer canceled" in events
+            assert "test-password-never-log" not in events
+            assert "PASS " not in events
+            print("FTP event logging and password exclusion: PASS")
             print("FTP integration tests passed: transfers, resume, listings, mutations, abort, disconnect, paths and self-protection.")
         finally:
             server.terminate()
