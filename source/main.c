@@ -16,6 +16,7 @@
 #include <strings.h>
 #include <unistd.h>
 #include "link_protocol.h"
+#include "ftp.h"
 
 /* Received builds go to their own folder so a send never replaces a working copy in Homebrew/Dev. */
 #define TARGET_DIR "fat:/Homebrew/Dev/Received"
@@ -54,10 +55,12 @@ static void snapshot_dldi(void){
     if(magic!=0xBF8DA5EDu||d[0x0D]>14)return;memcpy(dldi_snapshot,d,1u<<d[0x0D]);dldi_snapshot_ok=true;
 }
 
-enum { S_WIFI_INIT, S_WIFI_WAIT, S_LISTEN, S_HEAD, S_BODY, S_IDLE_ERROR };
+enum { S_WIFI_INIT, S_WIFI_WAIT, S_WIFI_RESET, S_LISTEN, S_HEAD, S_BODY, S_IDLE_ERROR };
 
 static int stage=S_WIFI_INIT, listen_fd=-1, client_fd=-1;
 static unsigned quiet_frames;
+static unsigned wifi_wait_frames, wifi_reset_frames;
+static bool wifi_initialized;
 static unsigned char head[LINK_HEAD_BYTES+LINK_NAME_MAX];
 static unsigned head_got,head_need;
 static LinkHeader request;
@@ -84,6 +87,7 @@ static bool set_nonblocking(int fd){int on=1;return ioctl(fd,FIONBIO,&on)==0;}
 
 static bool start_listening(void){
     listen_fd=socket(AF_INET,SOCK_STREAM,0);if(listen_fd<0)return false;
+    int reuse=1;setsockopt(listen_fd,SOL_SOCKET,SO_REUSEADDR,&reuse,sizeof(reuse));
     struct sockaddr_in a={0};a.sin_family=AF_INET;a.sin_port=htons(LINK_PORT);a.sin_addr.s_addr=htonl(INADDR_ANY);
     if(bind(listen_fd,(struct sockaddr *)&a,sizeof(a))<0||listen(listen_fd,1)<0||!set_nonblocking(listen_fd)){close(listen_fd);listen_fd=-1;return false;}
     struct in_addr ip={.s_addr=Wifi_GetIP()};snprintf(address_line,sizeof(address_line),"%s : %u",inet_ntoa(ip),LINK_PORT);
@@ -117,6 +121,9 @@ static void draw_screen(void){
     consoleClear();printf("\x1b[0;0HDSi Link %s",LINK_VERSION);printf("\x1b[20;0HA: BOOT LAST  START: EXIT");
     if(address_line[0])printf("\x1b[5;0H%-32.32s",address_line);
     printf("\x1b[6;0HEXITING AN APP RETURNS TO:\x1b[7;0H%-32.32s",self_path[0]?loader_path(self_path):"NOWHERE (NOT FOUND)");
+    printf("\x1b[22;0HFTP :5000  anonymous / any pass");
+    printf("\x1b[4;0HX: RETRY WI-FI (CANCEL TRANSFER)");
+    printf("\x1b[23;0H%s",isDSiMode()?((REG_SCFG_CLK&SCFG_CLK_ARM9_TWL)?"DSi mode / ARM9 134 MHz":"DSi mode / ARM9 67 MHz"):"DS mode / open or WEP only");
 }
 static void printable(char *s){for(;*s;s++)if(*s<32||*s>126)*s='?';}
 /* Shows what is about to be handed to Pico Loader and waits for A (boot) or B (cancel). */
@@ -142,9 +149,9 @@ static void boot(const char *rom){
     snprintf(params.romPath,sizeof(params.romPath),"%s",loader_path(rom));
     int n=snprintf(params.arguments,sizeof(params.arguments),"%s",rom);params.argumentsLength=(u32)n+1;
     static char launcher[256];memset(launcher,0,sizeof(launcher));snprintf(launcher,sizeof(launcher),"%s",loader_path(self_path));
-    status("BOOTING");if(listen_fd>=0)close(listen_fd);
-    /* Switch the radio fully off so it is idle when the ARM7 is restarted. */
-    Wifi_DisconnectAP();Wifi_DisableWifi();for(int i=0;i<30;i++)cothread_yield_irq(IRQ_VBLANK);
+    status("BOOTING");ftp_stop();if(listen_fd>=0)close(listen_fd);
+    /* lwIP must remain initialized; full Wi-Fi teardown is unsupported here. */
+    Wifi_DisconnectAP();for(int i=0;i<30;i++)cothread_yield_irq(IRQ_VBLANK);
     vramSetBankA(VRAM_A_LCD);vramSetBankB(VRAM_B_LCD);vramSetBankC(VRAM_C_LCD);vramSetBankD(VRAM_D_LCD);
     copy16(PICO_LOADER9,l9,n9);copy16(PICO_LOADER7,l7,n7);free(l9);free(l7);
     volatile PloadHeader7 *h=(volatile PloadHeader7 *)PICO_LOADER7;
@@ -210,6 +217,7 @@ static void resolve_return_path(int argc,char **argv){
 }
 int main(int argc,char **argv){
     snapshot_dldi();
+    if(isDSiMode())setCpuClock(true);
     consoleDemoInit();
     printf("\x1b[0;0HDSi Link %s",LINK_VERSION);
     printf("\x1b[20;0HA: BOOT LAST  START: EXIT");
@@ -221,23 +229,47 @@ int main(int argc,char **argv){
     if(!isDSiMode())detail("DS MODE: OPEN/WEP NETWORKS ONLY");
     for(;;){
         cothread_yield_irq(IRQ_VBLANK);scanKeys();unsigned down=keysDown();
+        if((down&KEY_X)&&stage!=S_WIFI_RESET){
+            if(stage==S_HEAD||stage==S_BODY)fail("WI-FI RETRY; TRANSFER CANCELED");
+            ftp_stop();close_client();if(listen_fd>=0){close(listen_fd);listen_fd=-1;}
+            address_line[0]=0;printf("\x1b[5;0H%32s","");printf("\x1b[21;0H%32s","");
+            detail("");status("RESTARTING WI-FI");
+            if(wifi_initialized){Wifi_DisconnectAP();wifi_reset_frames=4;stage=S_WIFI_RESET;}
+            else stage=S_WIFI_INIT;
+        }
         if(stage!=S_BODY&&stage!=S_HEAD){
-            if(down&KEY_START){close_client();if(listen_fd>=0)close(listen_fd);return 0;}
-            if((down&KEY_A)&&last_rom[0])boot(last_rom);
+            if(down&KEY_START){ftp_stop();close_client();if(listen_fd>=0)close(listen_fd);return 0;}
+            if((down&KEY_A)&&last_rom[0]&&!ftp_busy())boot(last_rom);
         }
         switch(stage){
+        case S_WIFI_RESET:
+            if(wifi_reset_frames){wifi_reset_frames--;break;}
+            Wifi_AutoConnect();wifi_wait_frames=0;stage=S_WIFI_WAIT;status("CONNECTING TO WI-FI");break;
         case S_WIFI_INIT:
             status("STARTING WI-FI");
             /* DSi mode lets DSWiFi load Advanced Setup (WPA2) connections; DS hardware falls back. */
             if(!Wifi_InitDefault(INIT_ONLY|WIFI_ATTEMPT_DSI_MODE)){status("WI-FI FAILED TO START");stage=S_IDLE_ERROR;break;}
+            wifi_initialized=true;
             if(Wifi_GetData(WIFIGETDATA_NUMWFCAPS,0,NULL)<=0){status("NO SAVED WI-FI CONNECTION");stage=S_IDLE_ERROR;break;}
-            Wifi_AutoConnect();stage=S_WIFI_WAIT;status("CONNECTING TO WI-FI");break;
+            Wifi_AutoConnect();wifi_wait_frames=0;stage=S_WIFI_WAIT;status("CONNECTING TO WI-FI");break;
         case S_WIFI_WAIT:{
             int r=Wifi_AssocStatus();
+            if(++wifi_wait_frames>60u*30u){status("WI-FI TIMED OUT; X TO RETRY");stage=S_IDLE_ERROR;break;}
             if(r==ASSOCSTATUS_CANNOTCONNECT){status("SAVED WI-FI CONNECTION FAILED");stage=S_IDLE_ERROR;break;}
-            if(r==ASSOCSTATUS_ASSOCIATED&&Wifi_GetIP()){if(start_listening()){stage=S_LISTEN;status("WAITING FOR A BUILD");}else{status("COULD NOT OPEN PORT");stage=S_IDLE_ERROR;}}
+            if(r==ASSOCSTATUS_ASSOCIATED&&Wifi_GetIP()){
+                if(start_listening()){
+                    stage=S_LISTEN;status("WAITING FOR A BUILD");
+                    if(!ftp_start("fat:",self_path,Wifi_GetIP()))log_line("FTP COULD NOT OPEN PORT 5000");
+                }else{status("COULD NOT OPEN PORT");stage=S_IDLE_ERROR;}
+            }
             break;}
         case S_LISTEN:{
+            ftp_poll();
+            static unsigned ftp_frames;
+            if(++ftp_frames%15==0)printf("\x1b[21;0H%-32.32s",ftp_status());
+            /* A connected FTP session owns the card until QUIT/disconnect.
+             * Existing build senders wait in the listener's backlog. */
+            if(ftp_busy())break;
             int c=accept(listen_fd,NULL,NULL);
             if(c>=0){if(!set_nonblocking(c)){close(c);break;}client_fd=c;head_got=0;head_need=LINK_HEAD_BYTES;quiet_frames=0;stage=S_HEAD;status("SENDER CONNECTED");detail("");}
             break;}
